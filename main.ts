@@ -126,6 +126,62 @@ function validateAndProcess() {
     }
   }
 
+  // Re-validate the written output: confirm it is still a well-formed
+  // image of the same format and dimensions, not just the same bytes.
+  const outIsPng = readBackBuf.length >= 8 &&
+    readBackBuf[0] === 0x89 && readBackBuf[1] === 0x50 && readBackBuf[2] === 0x4E && readBackBuf[3] === 0x47 &&
+    readBackBuf[4] === 0x0D && readBackBuf[5] === 0x0A && readBackBuf[6] === 0x1A && readBackBuf[7] === 0x0A;
+  const outIsJpeg = readBackBuf.length >= 2 &&
+    readBackBuf[0] === 0xFF && readBackBuf[1] === 0xD8;
+  if (isPng !== outIsPng || isJpeg !== outIsJpeg) {
+    console.error('Error: Output file format changed after write.');
+    process.exit(1);
+  }
+  if (outIsPng) {
+    if (readBackBuf.length < 24) {
+      console.error('Error: Output PNG too short for IHDR.');
+      process.exit(1);
+    }
+    const outWidth = readBackBuf.readUInt32BE(16);
+    const outHeight = readBackBuf.readUInt32BE(20);
+    if (outWidth !== width || outHeight !== height) {
+      console.error(`Error: Output PNG dimensions ${outWidth}x${outHeight} differ from validated ${width}x${height}.`);
+      process.exit(1);
+    }
+  } else {
+    let outOffset = 2;
+    let outFound = false;
+    let outWidth = 0;
+    let outHeight = 0;
+    while (outOffset < readBackBuf.length) {
+      while (outOffset < readBackBuf.length && readBackBuf[outOffset] === 0xFF) {
+        outOffset++;
+      }
+      if (outOffset >= readBackBuf.length) break;
+      const outMarker = readBackBuf[outOffset];
+      outOffset++;
+      if (outMarker === 0xD8 || outMarker === 0xD9 || outMarker === 0x01 || (outMarker >= 0xD0 && outMarker <= 0xD7)) {
+        continue;
+      }
+      if (outOffset + 2 > readBackBuf.length) break;
+      const outSegLen = readBackBuf.readUInt16BE(outOffset);
+      if (outSegLen < 2) break;
+      const outMarkerPos = outOffset - 1;
+      if (outMarker >= 0xC0 && outMarker <= 0xCF && outMarker !== 0xC4 && outMarker !== 0xC8 && outMarker !== 0xCC) {
+        if (outMarkerPos + 7 > readBackBuf.length) break;
+        outHeight = readBackBuf.readUInt16BE(outMarkerPos + 4);
+        outWidth = readBackBuf.readUInt16BE(outMarkerPos + 6);
+        outFound = true;
+        break;
+      }
+      outOffset += outSegLen;
+    }
+    if (!outFound || outWidth !== width || outHeight !== height) {
+      console.error(`Error: Output JPEG dimensions ${outWidth}x${outHeight} differ from validated ${width}x${height}.`);
+      process.exit(1);
+    }
+  }
+
   console.log(`Success: Validated ${isPng ? 'PNG' : 'JPEG'} (${width}x${height}, ${buf.length} bytes), copied and verified successfully.`);
   process.exit(0);
 }
